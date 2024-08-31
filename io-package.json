@@ -1,8 +1,21 @@
 {
     "common": {
         "name": "luxtronik2",
-        "version": "0.4.2",
+        "version": "0.4.3",
         "news": {
+            "0.4.3": {
+                "en": "Corrected logic for Energy Monitoring",
+                "de": "Korrigierte Logik zur Energieüberwachung",
+                "ru": "Исправленная логика для мониторинга энергии",
+                "pt": "Lógica correta para monitoramento de energia",
+                "nl": "Gecorrigeerde logica voor energiemonitoring",
+                "fr": "Logique corrigée pour la surveillance de l'énergie",
+                "it": "Logica corretta per il monitoraggio dell'energia",
+                "es": "Lógica corregida para la Vigilancia de la Energía",
+                "pl": "Skorygowana logika monitorowania energii",
+                "uk": "Виправлена логіка для моніторингу енергії",
+                "zh-cn": "修正的能源监测逻辑"
+            },
             "0.4.2": {
                 "en": "Filtering out empty time log entries\nUpdated to the latest luxtronik2 dependency",
                 "de": "Herausfiltern leerer Zeitprotokolleinträge\nAktualisiert auf die neueste luxtronik2-Abhängigkeit",
