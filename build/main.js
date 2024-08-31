@@ -1,7 +1,11 @@
 "use strict";
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
-    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
 }) : (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     o[k2] = m[k];
@@ -181,7 +185,7 @@ class Luxtronik2 extends utils.Adapter {
                     this.log.info('Heatpump busy, will retry later');
                 }
                 else {
-                    this.log.error(`Luxtronik read error, will retry later: ${err}`);
+                    this.log.warn(`Luxtronik read error, will retry later: ${err}`);
                     (_a = this.getSentry()) === null || _a === void 0 ? void 0 : _a.captureException(err);
                 }
                 this.luxRefreshTimeout = setTimeout(() => this.requestLuxtronikData(), this.config.refreshInterval * 1000);
@@ -280,6 +284,8 @@ class Luxtronik2 extends utils.Adapter {
     }
     async handleLuxtronikDataAsync(data) {
         try {
+            this.log.warn('handleLuxtronikDataAsync has been called.');
+            this.log.warn(`Received data: ${JSON.stringify(data)}`);
             for (const sectionName in data) {
                 const metaSection = lux_meta_1.luxMeta[sectionName];
                 const section = data[sectionName];
@@ -296,52 +302,59 @@ class Luxtronik2 extends utils.Adapter {
                     }
                     continue;
                 }
-                for (const itemName in section) {
-                    const meta = metaSection[itemName];
-                    const value = section[itemName];
-                    if (!meta) {
-                        if (metaSection.hasOwnProperty(itemName)) {
-                            // item was explicitly excluded (set to undefined in the meta-data)
-                            continue;
-                        }
-                        const msg = `Unknown data item ${sectionName}.${itemName}`;
-                        this.log.warn(msg);
-                        if (!this.reportedUnknownData.has(msg)) {
-                            this.reportedUnknownData.add(msg);
-                            const sentry = this.getSentry();
-                            sentry === null || sentry === void 0 ? void 0 : sentry.withScope((scope) => {
-                                scope.setExtra('value', value);
-                                sentry.captureMessage(msg, SentryNode.Severity.Warning);
-                            });
-                        }
-                        continue;
-                    }
-                    let stateValue;
-                    if (meta.type === 'number') {
-                        stateValue = value === 'no' ? null : value;
-                    }
-                    else if (meta.type === 'boolean') {
-                        switch (value) {
-                            case 'on':
-                                stateValue = true;
-                                break;
-                            case 'off':
-                                stateValue = false;
-                                break;
-                            default:
-                                stateValue = null;
-                                break;
-                        }
-                    }
-                    else {
-                        stateValue = value;
-                    }
-                    await this.setStateValueAsync(`${sectionName}.${itemName}`, stateValue);
-                }
+                this.log.warn(`Processing section: ${sectionName}`);
+                await this.processSection(sectionName, section, metaSection);
             }
         }
         finally {
             this.luxRefreshTimeout = setTimeout(() => this.requestLuxtronikData(), this.config.refreshInterval * 1000);
+        }
+    }
+    async processSection(sectionName, section, metaSection) {
+        this.log.warn(`Processing section: ${sectionName} with items: ${Object.keys(section).join(', ')}`);
+        for (const itemName in section) {
+            const value = section[itemName];
+            const meta = metaSection ? metaSection[itemName] : undefined;
+            const currentSectionName = `${sectionName}.${itemName}`;
+            this.log.warn(`Current item: ${itemName}, Current section path: ${currentSectionName}`);
+            if (typeof value === 'object' && value !== null && value.hasOwnProperty('item')) {
+                this.log.warn(`Creating channel: ${currentSectionName} for section: ${itemName}`);
+                // Create the main section channel if it doesn't exist
+                await this.extendObjectAsync(currentSectionName, {
+                    type: 'channel',
+                    common: {
+                        name: itemName,
+                    },
+                });
+                this.log.warn(`Processing sub-items of: ${currentSectionName}`);
+                await this.processSection(currentSectionName, value.item, meta ? meta.items : undefined);
+            }
+            else {
+                this.log.warn(`Processing value for: ${currentSectionName}`);
+                let stateValue;
+                if (meta && meta.type === 'number') {
+                    stateValue = value === 'no' ? null : value;
+                }
+                else if (meta && meta.type === 'boolean') {
+                    switch (value) {
+                        case 'on':
+                            stateValue = true;
+                            break;
+                        case 'off':
+                            stateValue = false;
+                            break;
+                        default:
+                            stateValue = null;
+                            break;
+                    }
+                }
+                else {
+                    stateValue = value;
+                }
+                const stateId = `${sectionName}.${itemName}`;
+                this.log.warn(`Setting state for: ${stateId} with value: ${stateValue}`);
+                await this.setStateValueAsync(stateId, stateValue);
+            }
         }
     }
     handleNextUpdate() {
@@ -381,16 +394,14 @@ class Luxtronik2 extends utils.Adapter {
         });
     }
     async handleWsMessageAsync(msg) {
-        var _a, _b, _c, _d, _e;
+        var _a, _b, _c, _d, _e, _f, _g, _h;
         const message = await (0, xml2js_1.parseStringPromise)(msg);
-        this.log.debug(JSON.stringify(message));
+        this.log.debug(`Parsed WebSocket message: ${JSON.stringify(message)}`);
         if ('Navigation' in message) {
             if (this.navigationSections.length > 0) {
                 return;
             }
-            // Reply to the REFRESH command, gives us the structure but no actual data
             for (let i = 0; i < message.Navigation.item.length && i < 2; i++) {
-                // only look at the first two items ("Informationen" and "Einstellungen")
                 const item = message.Navigation.item[i];
                 await this.extendObjectAsync(this.getItemId(item), {
                     type: 'device',
@@ -405,7 +416,6 @@ class Luxtronik2 extends utils.Adapter {
         }
         else if ('Content' in message) {
             if (this.isSaving) {
-                // the SAVE command gives us the latest "Content", thus we need to ignore this message
                 this.isSaving = false;
                 if (!this.handleNextUpdate()) {
                     this.requestAllContent();
@@ -416,60 +426,114 @@ class Luxtronik2 extends utils.Adapter {
             const navigationId = this.getItemId(navigationItem);
             const sectionIds = [];
             let shouldSave = false;
-            for (let i = 0; i < message.Content.item.length; i++) {
-                const section = message.Content.item[i];
+            for (const section of message.Content.item) {
                 const sectionHandler = this.createHandler(section, navigationId, sectionIds);
                 if (!sectionHandler) {
                     continue;
                 }
-                if (!this.handlers[sectionHandler.id]) {
-                    this.handlers[sectionHandler.id] = sectionHandler;
-                    await sectionHandler.extendObjectAsync();
-                }
-                if (sectionHandler instanceof TimeLogSectionHandler) {
-                    // time log sections are actually states
-                    await sectionHandler.setStateAsync();
-                    continue;
-                }
-                const itemIds = [];
-                for (let j = 0; j < section.item.length; j++) {
-                    const item = section.item[j];
-                    try {
-                        const itemHandler = this.createHandler(item, sectionHandler.id, itemIds);
-                        if (!itemHandler) {
-                            continue;
-                        }
-                        if (!this.handlers[itemHandler.id]) {
-                            this.log.silly(`Creating ${itemHandler.id}`);
-                            await itemHandler.extendObjectAsync();
-                            this.handlers[itemHandler.id] = itemHandler;
-                        }
-                        if (this.requestedUpdates.length === 0) {
-                            this.log.silly(`Setting state of ${itemHandler.id}`);
-                            await itemHandler.setStateAsync();
-                        }
-                        else {
-                            const updateIndex = this.requestedUpdates.findIndex((ch) => ch.id === itemHandler.id);
-                            if (updateIndex >= 0) {
-                                const cmd = itemHandler.createSetCommand(this.requestedUpdates[updateIndex].value);
-                                this.log.debug(`Sending ${cmd}`);
-                                (_a = this.getSentry()) === null || _a === void 0 ? void 0 : _a.addBreadcrumb({ type: 'http', category: 'ws', data: { url: cmd } });
-                                (_b = this.webSocket) === null || _b === void 0 ? void 0 : _b.send(cmd);
-                                this.requestedUpdates.splice(updateIndex);
-                                shouldSave = true;
+                if (sectionHandler instanceof SectionHandler) {
+                    if (sectionHandler.id.includes('Energiemonitor')) {
+                        for (const subItem of section.item) {
+                            if ('item' in subItem) {
+                                const subItemHandler = this.createHandler(subItem, sectionHandler.id, sectionIds);
+                                if (subItemHandler) {
+                                    if (!this.handlers[subItemHandler.id]) {
+                                        this.handlers[subItemHandler.id] = subItemHandler;
+                                        await subItemHandler.extendObjectAsync();
+                                    }
+                                    if (subItemHandler instanceof SectionHandler) {
+                                        for (const deepSubItem of subItem.item) {
+                                            const deepSubItemHandler = this.createHandler(deepSubItem, subItemHandler.id, sectionIds);
+                                            if (deepSubItemHandler) {
+                                                if (!this.handlers[deepSubItemHandler.id]) {
+                                                    this.handlers[deepSubItemHandler.id] = deepSubItemHandler;
+                                                    await deepSubItemHandler.extendObjectAsync();
+                                                }
+                                                await deepSubItemHandler.setStateAsync();
+                                            }
+                                        }
+                                    }
+                                    else {
+                                        await subItemHandler.setStateAsync();
+                                    }
+                                }
+                            }
+                            else {
+                                const subItemHandler = this.createHandler(subItem, sectionHandler.id, sectionIds);
+                                if (subItemHandler && !(subItemHandler instanceof SectionHandler)) {
+                                    if (!this.handlers[subItemHandler.id]) {
+                                        this.handlers[subItemHandler.id] = subItemHandler;
+                                        await subItemHandler.extendObjectAsync();
+                                    }
+                                    if (this.requestedUpdates.length === 0) {
+                                        await subItemHandler.setStateAsync();
+                                    }
+                                    else {
+                                        const updateIndex = this.requestedUpdates.findIndex((ch) => ch.id === subItemHandler.id);
+                                        if (updateIndex >= 0) {
+                                            const cmd = subItemHandler.createSetCommand(this.requestedUpdates[updateIndex].value);
+                                            this.log.debug(`Sending ${cmd}`);
+                                            (_a = this.getSentry()) === null || _a === void 0 ? void 0 : _a.addBreadcrumb({ type: 'http', category: 'ws', data: { url: cmd } });
+                                            (_b = this.webSocket) === null || _b === void 0 ? void 0 : _b.send(cmd);
+                                            this.requestedUpdates.splice(updateIndex);
+                                            shouldSave = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                    catch (error) {
-                        this.log.error(`Couldn't handle '${sectionHandler.id}' -> '${item.name[0]}': ${error}`);
-                        (_c = this.getSentry()) === null || _c === void 0 ? void 0 : _c.captureException(error, { extra: { section: sectionHandler.id, item } });
+                    else {
+                        for (const subItem of section.item) {
+                            const subItemHandler = this.createHandler(subItem, sectionHandler.id, sectionIds);
+                            if (subItemHandler && !(subItemHandler instanceof SectionHandler)) {
+                                if (!this.handlers[subItemHandler.id]) {
+                                    this.handlers[subItemHandler.id] = subItemHandler;
+                                    await subItemHandler.extendObjectAsync();
+                                }
+                                if (this.requestedUpdates.length === 0) {
+                                    await subItemHandler.setStateAsync();
+                                }
+                                else {
+                                    const updateIndex = this.requestedUpdates.findIndex((ch) => ch.id === subItemHandler.id);
+                                    if (updateIndex >= 0) {
+                                        const cmd = subItemHandler.createSetCommand(this.requestedUpdates[updateIndex].value);
+                                        this.log.debug(`Sending ${cmd}`);
+                                        (_c = this.getSentry()) === null || _c === void 0 ? void 0 : _c.addBreadcrumb({ type: 'http', category: 'ws', data: { url: cmd } });
+                                        (_d = this.webSocket) === null || _d === void 0 ? void 0 : _d.send(cmd);
+                                        this.requestedUpdates.splice(updateIndex);
+                                        shouldSave = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    if (!this.handlers[sectionHandler.id]) {
+                        this.handlers[sectionHandler.id] = sectionHandler;
+                        await sectionHandler.extendObjectAsync();
+                    }
+                    if (this.requestedUpdates.length === 0) {
+                        await sectionHandler.setStateAsync();
+                    }
+                    else {
+                        const updateIndex = this.requestedUpdates.findIndex((ch) => ch.id === sectionHandler.id);
+                        if (updateIndex >= 0) {
+                            const cmd = sectionHandler.createSetCommand(this.requestedUpdates[updateIndex].value);
+                            this.log.debug(`Sending ${cmd}`);
+                            (_e = this.getSentry()) === null || _e === void 0 ? void 0 : _e.addBreadcrumb({ type: 'http', category: 'ws', data: { url: cmd } });
+                            (_f = this.webSocket) === null || _f === void 0 ? void 0 : _f.send(cmd);
+                            this.requestedUpdates.splice(updateIndex);
+                            shouldSave = true;
+                        }
                     }
                 }
             }
             if (shouldSave) {
-                this.log.debug('Saving');
-                (_d = this.getSentry()) === null || _d === void 0 ? void 0 : _d.addBreadcrumb({ type: 'http', category: 'ws', data: { url: 'SAVE;1' } });
-                (_e = this.webSocket) === null || _e === void 0 ? void 0 : _e.send('SAVE;1');
+                this.log.warn('Saving changes.');
+                (_g = this.getSentry()) === null || _g === void 0 ? void 0 : _g.addBreadcrumb({ type: 'http', category: 'ws', data: { url: 'SAVE;1' } });
+                (_h = this.webSocket) === null || _h === void 0 ? void 0 : _h.send('SAVE;1');
                 this.isSaving = true;
             }
             else {

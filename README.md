@@ -25,6 +25,9 @@ Connects to Luxtronik 2 heatpump controllers over LAN and WebSocket
 	Placeholder for the next version (at the beginning of the line):
 	### **WORK IN PROGRESS**
 -->
+### 0.4.3 (2024-08-31)
+-   (DNAngelX) Corrected logic for Energy Monitoring
+
 
 ### 0.4.2 (2022-01-25)
 
